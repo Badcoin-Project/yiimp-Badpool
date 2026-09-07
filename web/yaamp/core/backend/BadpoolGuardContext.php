@@ -47,6 +47,10 @@ class BadpoolGuardContext
 		'attribution-checksum',
 		'projected-earnings-checksum',
 		'operator-confirms-live-capture-earnings',
+		'candidate-inventory-checksum',
+		'block-inventory-checksum',
+		'rpc-result-checksum',
+		'operator-confirms-live-capture-block-enrichment',
 	);
 
 	private $dangerousOptions = array(
@@ -313,7 +317,9 @@ class BadpoolGuardContext
 	{
 		$options = array();
 		$batchOptions = array('mode', 'scope', 'only', 'batch-size', 'stop-before-wallet-send', 'resume-batch-id', 'payment-delay-override-package', 'payment-delay-override-package-checksum', 'operator-confirms-payment-delay-override');
-		$liveBridgeOptions = array('approval-package','source-live-candidate-checksum','attribution-checksum','operator-confirms-live-capture-earnings');
+		$liveBridgeSharedOptions = array('approval-package');
+		$liveCaptureEarningsOptions = array('source-live-candidate-checksum','attribution-checksum','projected-earnings-checksum','operator-confirms-live-capture-earnings');
+		$liveBlockEnrichmentOptions = array('candidate-inventory-checksum','block-inventory-checksum','rpc-result-checksum','operator-confirms-live-capture-block-enrichment');
 		foreach ($args as $arg) {
 
 			if (!preg_match('/^--([^=]+)(=(.*))?$/', $arg, $matches)) {
@@ -324,6 +330,10 @@ class BadpoolGuardContext
 			$name = $matches[1];
 			$value = isset($matches[3]) ? $matches[3] : true;
 			$lower = strtolower($name);
+			if (in_array($lower, array_merge($liveBridgeSharedOptions, $liveCaptureEarningsOptions, $liveBlockEnrichmentOptions), true) && !isset($matches[2])) {
+				$this->addError("Option --$name requires a value.");
+				return array();
+			}
 
 			if (in_array($lower, $this->dangerousOptions, true)) {
 				$this->addError("Dangerous option refused in read-only preview command: --$name");
@@ -333,8 +343,18 @@ class BadpoolGuardContext
 				$this->addError("Unknown option refused: --$name");
 				return array();
 			}
-			if (in_array($lower, $liveBridgeOptions, true) && strpos($this->command, 'live-capture-earnings-') !== 0) {
+			$isEarningsCommand = strpos($this->command, 'live-capture-earnings-') === 0;
+			$isEnrichmentCommand = strpos($this->command, 'live-capture-block-enrichment-') === 0;
+			if (in_array($lower, $liveCaptureEarningsOptions, true) && !$isEarningsCommand) {
 				$this->addError("Option --$name is only available for live capture earnings bridge commands.");
+				return array();
+			}
+			if (in_array($lower, $liveBlockEnrichmentOptions, true) && !$isEnrichmentCommand) {
+				$this->addError("Option --$name is only available for live block enrichment commands.");
+				return array();
+			}
+			if (in_array($lower, $liveBridgeSharedOptions, true) && !$isEarningsCommand && !$isEnrichmentCommand) {
+				$this->addError("Option --$name is only available for live capture bridge commands.");
 				return array();
 			}
 			if ($this->command === 'completed-payout-batch-closeout' && !in_array($lower, array('batch-id', 'format'), true)) {

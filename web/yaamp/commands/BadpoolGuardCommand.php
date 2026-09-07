@@ -2,6 +2,7 @@
 
 require_once(dirname(__FILE__).'/../core/backend/BadpoolGuardContext.php');
 require_once(dirname(__FILE__).'/../core/backend/BadpoolLiveCaptureEarningsBridge.php');
+require_once(dirname(__FILE__).'/../core/backend/BadpoolLiveBlockEnrichmentBridge.php');
 require_once(dirname(__FILE__).'/../core/backend/BadpoolStage1Manifest.php');
 require_once(dirname(__FILE__).'/../core/backend/BadpoolBackwardMaturityDryrun.php');
 require_once(dirname(__FILE__).'/../core/backend/BadpoolBackwardMaturityApprovalPackage.php');
@@ -68,6 +69,9 @@ class BadpoolGuardCommand extends CConsoleCommand
 		'block-accounting-dryrun',
             'block-accounting-approval-package',
 		'block-accounting-apply',
+		'live-capture-block-enrichment-dryrun',
+		'live-capture-block-enrichment-approval-package',
+		'live-capture-block-enrichment-apply',
 		'live-capture-earnings-dryrun',
 		'live-capture-earnings-approval-package',
 		'live-capture-earnings-apply',
@@ -265,6 +269,11 @@ class BadpoolGuardCommand extends CConsoleCommand
 			case 'block-accounting-apply':
 				$report = $this->blockAccountingApplyReport($args);
 				break;
+			case 'live-capture-block-enrichment-dryrun':
+			case 'live-capture-block-enrichment-approval-package':
+			case 'live-capture-block-enrichment-apply':
+				$report = $this->liveCaptureBlockEnrichmentReport($action, $args);
+				break;
 			case 'live-capture-earnings-dryrun':
 			case 'live-capture-earnings-approval-package':
 			case 'live-capture-earnings-apply':
@@ -346,6 +355,9 @@ class BadpoolGuardCommand extends CConsoleCommand
 			"       Retained-package apply additionally requires --retained-dryrun-report=<path> and the package-bound --retained-dryrun-report-checksum=<sha256>; the operator confirmation remains a separate runtime requirement.\n".
 			"       php yaamp/yiic.php badpoolguard account-credit-clear-dryrun --coin-id=<id> [--format=json|text]\n".
 				"       php yaamp/yiic.php badpoolguard block-accounting-dryrun --coin-id=<id> --selector=backlog --first-block-id=<id> --last-block-id=<id> [--max-rows=50] [--format=json|text]\n".
+			"       php yaamp/yiic.php badpoolguard live-capture-block-enrichment-dryrun --coin-id=<id> --algo=<algo> [--selected-block-ids=<csv>] [--limit=<n>] --format=json\n".
+			"       php yaamp/yiic.php badpoolguard live-capture-block-enrichment-approval-package --coin-id=<id> --algo=<algo> [--selected-block-ids=<csv>] [--limit=<n>] --format=json\n".
+			"       ".BadpoolLiveBlockEnrichmentBridge::applyCommandShape()."\n".
 			"       php yaamp/yiic.php badpoolguard live-capture-earnings-dryrun --coin-id=<id> [--selected-block-ids=<csv>] [--limit=<n>] [--format=json|text]\n".
 			"       php yaamp/yiic.php badpoolguard live-capture-earnings-approval-package --coin-id=<id> [--selected-block-ids=<csv>] [--limit=<n>] --format=json\n".
 			"       ".BadpoolLiveCaptureEarningsBridge::applyCommandShape()."\n".
@@ -7975,6 +7987,17 @@ class BadpoolGuardCommand extends CConsoleCommand
 		}
 		return $o;
 	}
+
+	private function liveCaptureBlockEnrichmentReport($action, $args)
+	{
+		$options=array();
+		foreach($args as $arg){if(!preg_match('/^--([^=]+)=(.*)$/',$arg,$m))return $this->liveCaptureEnrichmentRefusal($action,'malformed option refused');$k=strtolower($m[1]);if(isset($options[$k]))return $this->liveCaptureEnrichmentRefusal($action,'duplicate option refused: --'.$k);$options[$k]=$m[2];}
+		$allowed=array('coin-id','algo','selected-block-ids','limit','format','approval-package','approval-package-checksum','candidate-inventory-checksum','block-inventory-checksum','rpc-result-checksum','selected-scope-checksum','operator-confirms-live-capture-block-enrichment');foreach($options as $k=>$v)if(!in_array($k,$allowed,true))return $this->liveCaptureEnrichmentRefusal($action,'unknown option refused: --'.$k);
+		$bridge=new BadpoolLiveBlockEnrichmentBridge(new BadpoolYiiLiveBlockEnrichmentStore(app()->db),function($coin){return new WalletRPC($coin);});
+		try{$coin=intval(arraySafeVal($options,'coin-id',0));$algo=(string)arraySafeVal($options,'algo','');if($action==='live-capture-block-enrichment-apply'){$path=arraySafeVal($options,'approval-package');$sha=strtolower((string)arraySafeVal($options,'approval-package-checksum'));if(!$path||!preg_match('/^[a-f0-9]{64}$/',$sha)||!is_file($path))throw new InvalidArgumentException('apply requires approval package and file checksum');$raw=file_get_contents($path);if(!hash_equals($sha,hash('sha256',$raw)))throw new RuntimeException('approval package file checksum mismatch');$p=json_decode($raw,true);if(!is_array($p)||intval(arraySafeVal($p,'coin_id'))!==$coin||(string)arraySafeVal($p,'algo')!==$algo)throw new RuntimeException('approval package scope mismatch');$provided=array();foreach(array('candidate-inventory-checksum','block-inventory-checksum','rpc-result-checksum','selected-scope-checksum') as $k)$provided[str_replace('-','_',$k)]=arraySafeVal($options,$k);return $bridge->applyPackage($p,$provided,arraySafeVal($options,'operator-confirms-live-capture-block-enrichment'));}$ids=BadpoolLiveBlockEnrichmentBridge::parseIds(arraySafeVal($options,'selected-block-ids',''));$limit=intval(arraySafeVal($options,'limit',25));return $action==='live-capture-block-enrichment-dryrun'?$bridge->dryrun($coin,$algo,$ids,$limit):$bridge->approvalPackage($coin,$algo,$ids,$limit);}
+		catch(Exception $e){return $this->liveCaptureEnrichmentRefusal($action,$e->getMessage());}
+	}
+	private function liveCaptureEnrichmentRefusal($action,$message){$this->guard->addError($message);return array('schema'=>BadpoolLiveBlockEnrichmentBridge::SCHEMA,'action'=>$action,'status'=>'refused','errors'=>array($message),'db_mutations'=>false,'financial_mutations'=>false,'wallet_sends'=>false);}
 
 	private function liveCaptureEarningsReport($action, $args)
 	{
