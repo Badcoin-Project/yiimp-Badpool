@@ -47,6 +47,10 @@ class BadpoolGuardContext
 		'attribution-checksum',
 		'projected-earnings-checksum',
 		'operator-confirms-live-capture-earnings',
+		'candidate-inventory-checksum',
+		'block-inventory-checksum',
+		'rpc-result-checksum',
+		'operator-confirms-live-capture-block-enrichment',
 	);
 
 	private $dangerousOptions = array(
@@ -313,7 +317,7 @@ class BadpoolGuardContext
 	{
 		$options = array();
 		$batchOptions = array('mode', 'scope', 'only', 'batch-size', 'stop-before-wallet-send', 'resume-batch-id', 'payment-delay-override-package', 'payment-delay-override-package-checksum', 'operator-confirms-payment-delay-override');
-		$liveBridgeOptions = array('approval-package','source-live-candidate-checksum','attribution-checksum','operator-confirms-live-capture-earnings');
+		$liveBridgeOptions = array('approval-package','source-live-candidate-checksum','attribution-checksum','operator-confirms-live-capture-earnings','candidate-inventory-checksum','block-inventory-checksum','rpc-result-checksum','operator-confirms-live-capture-block-enrichment');
 		foreach ($args as $arg) {
 
 			if (!preg_match('/^--([^=]+)(=(.*))?$/', $arg, $matches)) {
@@ -333,7 +337,7 @@ class BadpoolGuardContext
 				$this->addError("Unknown option refused: --$name");
 				return array();
 			}
-			if (in_array($lower, $liveBridgeOptions, true) && strpos($this->command, 'live-capture-earnings-') !== 0) {
+			if (in_array($lower, $liveBridgeOptions, true) && strpos($this->command, 'live-capture-earnings-') !== 0 && strpos($this->command, 'live-capture-block-enrichment-') !== 0) {
 				$this->addError("Option --$name is only available for live capture earnings bridge commands.");
 				return array();
 			}
