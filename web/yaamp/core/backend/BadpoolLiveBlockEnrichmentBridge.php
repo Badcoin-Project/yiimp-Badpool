@@ -72,10 +72,10 @@ class BadpoolLiveBlockEnrichmentBridge
 		return array('txhash'=>$txhash,'amount'=>$this->decimal($d['amount']),'confirmations'=>$txconf,'price'=>$this->decimal($row['coin_price']),'category'=>$resultCategory);
 	}
 
-	public function approvalPackage($coin,$algo,$ids=array(),$limit=25){$r=$this->dryrun($coin,$algo,$ids,$limit);$r['action']='live-capture-block-enrichment-approval-package';$r['approval_ready']=$r['blocked_count']===0&&$r['approved_count']>0;$r['approval_package_checksum']=self::checksum(self::payload($r));return $r;}
+	public function approvalPackage($coin,$algo,$ids=array(),$limit=25){$r=$this->dryrun($coin,$algo,$ids,$limit);$r['action']='live-capture-block-enrichment-approval-package';$r['approval_ready']=$r['blocked_count']===0&&$r['approved_count']>0;$r['approval_package_checksum']=self::approvalPackageChecksum($r);return $r;}
 	public function applyPackage($p,$provided,$confirmation)
 	{
-		if(!is_array($p)||!isset($p['approval_package_checksum'])||!hash_equals($p['approval_package_checksum'],self::checksum(self::payload($p))))throw new RuntimeException('approval package checksum mismatch');
+		if(!is_array($p)||!isset($p['approval_package_checksum'])||!hash_equals((string)$p['approval_package_checksum'],self::approvalPackageChecksum($p)))throw new RuntimeException('approval package checksum mismatch');
 		foreach(array('candidate_inventory_checksum','block_inventory_checksum','rpc_result_checksum','selected_scope_checksum') as $k)if(!isset($provided[$k])||!hash_equals((string)$p[$k],(string)$provided[$k]))throw new RuntimeException($k.' mismatch');
 		if($confirmation!==self::CONFIRMATION)throw new RuntimeException('incorrect operator confirmation');if(empty($p['approval_ready'])||intval($p['blocked_count'])!==0)throw new RuntimeException('package contains blocked candidates');
 		$f=$this->dryrun($p['coin_id'],$p['algo'],$p['selected_block_ids'],count($p['selected_block_ids']));foreach(array('candidate_inventory_checksum','block_inventory_checksum','rpc_result_checksum','selected_scope_checksum') as $k)if(!hash_equals($p[$k],$f[$k]))throw new RuntimeException(str_replace('_checksum','',$k).' drift');
@@ -84,8 +84,15 @@ class BadpoolLiveBlockEnrichmentBridge
 	}
 	public static function applyCommandShape(){return 'php yaamp/yiic.php badpoolguard live-capture-block-enrichment-apply --coin-id=<id> --algo=<algo> --approval-package=<path> --approval-package-checksum=<file-sha256> --candidate-inventory-checksum=<sha256> --block-inventory-checksum=<sha256> --rpc-result-checksum=<sha256> --selected-scope-checksum=<sha256> --operator-confirms-live-capture-block-enrichment='.self::CONFIRMATION.' --format=json';}
 	public static function checksum($v){return hash('sha256',json_encode(self::canonical($v),JSON_UNESCAPED_SLASHES));}
-	private static function payload($p){$out=$p;unset($out['approval_package_checksum']);return $out;}
-	private static function canonical($v){if(!is_array($v))return $v;if(array_keys($v)!==range(0,count($v)-1))ksort($v,SORT_STRING);foreach($v as $k=>$x)$v[$k]=self::canonical($x);return $v;}
+	public static function approvalPackageChecksum($p){return self::checksum(self::approvalPackagePayload($p));}
+	private static function approvalPackagePayload($p)
+	{
+		$out=$p;
+		unset($out['approval_package_checksum'],$out['report_checksum']);
+		// Normalize through the same JSON object/array boundary used by the file executor.
+		return json_decode(json_encode($out,JSON_UNESCAPED_SLASHES),true);
+	}
+	private static function canonical($v){if(!is_array($v))return $v;$isList=count($v)===0||array_keys($v)===range(0,count($v)-1);if(!$isList)ksort($v,SORT_STRING);foreach($v as $k=>$x)$v[$k]=self::canonical($x);return $v;}
 	private function blockedCategory($reasons){if(in_array('blocked_pending_rpc',$reasons,true))return 'blocked_pending_rpc';if(in_array('blocked_pending_block_amount',$reasons,true))return 'blocked_pending_block_amount';if(in_array('blocked_orphan',$reasons,true))return 'blocked_orphan';return 'blocked_invalid_rpc_result';}
 	private function candidateState($r){return array('block_id'=>intval($r['block_id']),'coin_id'=>intval($r['candidate_coin_id']),'algo'=>(string)$r['candidate_algo'],'blockhash'=>(string)$r['candidate_blockhash']);}
 	private function expectedState($r){if(empty($r['block_exists']))return null;$o=array('id'=>intval($r['block_id']));foreach(array('coin_id','blockhash','txhash','amount','confirmations','price','category') as $k)$o[$k]=isset($r['block_'.$k])?$r['block_'.$k]:null;return $o;}

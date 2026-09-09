@@ -7146,6 +7146,10 @@ class BadpoolGuardCommand extends CConsoleCommand
 		if ($this->isPayoutAuditCommand(arraySafeVal($report, 'command'))) {
 			$report = $this->ensurePayoutPreviewAuditFields($report);
 		}
+		if (arraySafeVal($report, 'action') === 'live-capture-block-enrichment-approval-package') {
+			// Bind the exact finalized package envelope that will cross the JSON file boundary.
+			$report['approval_package_checksum'] = BadpoolLiveBlockEnrichmentBridge::approvalPackageChecksum($report);
+		}
 		$report['report_checksum'] = BadpoolGuardReport::checksum($report);
 		if (arraySafeVal($report, 'command') === BadpoolBackwardMaturityDryrun::COMMAND) $report['report_checksum']['purpose'] = BadpoolBackwardMaturityDryrun::REPORT_CHECKSUM_PURPOSE;
 		return $report;
