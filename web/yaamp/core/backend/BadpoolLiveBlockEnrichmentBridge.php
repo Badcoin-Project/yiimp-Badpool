@@ -84,6 +84,43 @@ class BadpoolLiveBlockEnrichmentBridge
 	}
 	public static function applyCommandShape(){return 'php yaamp/yiic.php badpoolguard live-capture-block-enrichment-apply --coin-id=<id> --algo=<algo> --approval-package=<path> --approval-package-checksum=<file-sha256> --candidate-inventory-checksum=<sha256> --block-inventory-checksum=<sha256> --rpc-result-checksum=<sha256> --selected-scope-checksum=<sha256> --operator-confirms-live-capture-block-enrichment='.self::CONFIRMATION.' --format=json';}
 	public static function checksum($v){return hash('sha256',json_encode(self::canonical($v),JSON_UNESCAPED_SLASHES));}
+	public static function normalizeBlockState($state)
+	{
+		if(!is_array($state))throw new InvalidArgumentException('block state must be an array');
+		$fields=array('id','coin_id','blockhash','txhash','amount','confirmations','price','category');$allowed=array_flip($fields);
+		foreach($state as $field=>$value)if(!isset($allowed[$field]))throw new InvalidArgumentException('unexpected block state field: '.$field);
+		$out=array();
+		foreach($fields as $field){
+			if(!array_key_exists($field,$state))continue;
+			$value=$state[$field];
+			if($value===null){$out[$field]=null;continue;}
+			if($field==='id'||$field==='coin_id'||$field==='confirmations')$out[$field]=self::normalizeInteger($value);
+			elseif($field==='amount'||$field==='price')$out[$field]=self::normalizeDecimal($value);
+			else $out[$field]=(string)$value;
+		}
+		return $out;
+	}
+	public static function blockStatesEqual($left,$right){return self::normalizeBlockState($left)===self::normalizeBlockState($right);}
+	private static function normalizeInteger($value)
+	{
+		if(!(is_int($value)||is_string($value)))throw new InvalidArgumentException('invalid integer block state value');
+		if(!preg_match('/^[+-]?[0-9]+$/D',(string)$value))return (string)$value;
+		$value=(string)$value;$negative=isset($value[0])&&$value[0]==='-';
+		if(isset($value[0])&&($value[0]==='-'||$value[0]==='+'))$value=substr($value,1);
+		$value=ltrim($value,'0');if($value==='')return '0';return $negative?'-'.$value:$value;
+	}
+	private static function normalizeDecimal($value)
+	{
+		// Deliberately operate on fixed-point text: binary floating point must not
+		// participate in a monetary reconciliation decision.
+		if(!(is_int($value)||is_string($value)))throw new InvalidArgumentException('invalid decimal block state value');
+		if(!preg_match('/^[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)$/D',(string)$value))return (string)$value;
+		$value=(string)$value;$negative=isset($value[0])&&$value[0]==='-';
+		if(isset($value[0])&&($value[0]==='-'||$value[0]==='+'))$value=substr($value,1);
+		$parts=explode('.',$value,2);$whole=ltrim($parts[0],'0');if($whole==='')$whole='0';
+		$fraction=isset($parts[1])?rtrim($parts[1],'0'):'';$value=$fraction===''?$whole:$whole.'.'.$fraction;
+		return $negative&&$value!=='0'?'-'.$value:$value;
+	}
 	public static function approvalPackageChecksum($p){return self::checksum(self::approvalPackagePayload($p));}
 	private static function approvalPackagePayload($p)
 	{
@@ -103,5 +140,5 @@ class BadpoolYiiLiveBlockEnrichmentStore implements BadpoolLiveBlockEnrichmentSt
 {
 	private $db; public function __construct($db){$this->db=$db;}
 	public function candidates($coin,$algo,$ids,$limit){$p=array(':coin'=>$coin,':algo'=>$algo);$where='C.coin_id=:coin AND C.algo=:algo';if($ids){$q=array();foreach($ids as $n=>$id){$k=':id'.$n;$q[]=$k;$p[$k]=$id;}$where.=' AND C.block_id IN ('.implode(',',$q).')';}$sql="SELECT C.block_id,C.coin_id candidate_coin_id,C.algo candidate_algo,C.blockhash candidate_blockhash,B.id joined_block_id,B.coin_id block_coin_id,B.blockhash block_blockhash,B.txhash block_txhash,B.amount block_amount,B.confirmations block_confirmations,B.price block_price,B.category block_category,CO.algo block_algo,CO.price coin_price FROM live_block_candidates C LEFT JOIN blocks B ON B.id=C.block_id LEFT JOIN coins CO ON CO.id=B.coin_id WHERE $where ORDER BY C.block_id LIMIT ".intval($limit);$rows=$this->db->createCommand($sql)->queryAll(true,$p);foreach($rows as &$r){$r['block_exists']=$r['joined_block_id']!==null;$r['coin']=$r['block_exists']?getdbo('db_coins',$r['block_coin_id']):null;}return $rows;}
-	public function applyEnrichments($updates){$tx=$this->db->beginTransaction();try{$done=0;$reconciled=0;foreach($updates as $u){$e=$u['expected_block'];$row=$this->db->createCommand('SELECT id,coin_id,blockhash,txhash,amount,confirmations,price,category FROM blocks WHERE id=:id FOR UPDATE')->queryRow(true,array(':id'=>$u['block_id']));if(BadpoolLiveBlockEnrichmentBridge::checksum($row)!==BadpoolLiveBlockEnrichmentBridge::checksum($e))throw new RuntimeException('locked block drift: '.$u['block_id']);$n=$this->db->createCommand()->update('blocks',$u['enrichment'],'id=:id',array(':id'=>$u['block_id']));if(intval($n)!==1)throw new RuntimeException('block update failed: '.$u['block_id']);$check=$this->db->createCommand('SELECT txhash,amount,confirmations,price,category FROM blocks WHERE id=:id')->queryRow(true,array(':id'=>$u['block_id']));if(BadpoolLiveBlockEnrichmentBridge::checksum($check)!==BadpoolLiveBlockEnrichmentBridge::checksum($u['enrichment']))throw new RuntimeException('block reconciliation failed: '.$u['block_id']);$done++;$reconciled++;}$tx->commit();return array('updated_count'=>$done,'reconciled_count'=>$reconciled);}catch(Exception $e){if($tx->active)$tx->rollback();throw $e;}}
+	public function applyEnrichments($updates){$tx=$this->db->beginTransaction();try{$done=0;$reconciled=0;foreach($updates as $u){$e=$u['expected_block'];$row=$this->db->createCommand('SELECT id,coin_id,blockhash,txhash,amount,confirmations,price,category FROM blocks WHERE id=:id FOR UPDATE')->queryRow(true,array(':id'=>$u['block_id']));if(!BadpoolLiveBlockEnrichmentBridge::blockStatesEqual($row,$e))throw new RuntimeException('locked block drift: '.$u['block_id']);$n=$this->db->createCommand()->update('blocks',$u['enrichment'],'id=:id',array(':id'=>$u['block_id']));if(intval($n)!==1)throw new RuntimeException('block update failed: '.$u['block_id']);$check=$this->db->createCommand('SELECT txhash,amount,confirmations,price,category FROM blocks WHERE id=:id')->queryRow(true,array(':id'=>$u['block_id']));if(!BadpoolLiveBlockEnrichmentBridge::blockStatesEqual($check,$u['enrichment']))throw new RuntimeException('block reconciliation failed: '.$u['block_id']);$done++;$reconciled++;}$tx->commit();return array('updated_count'=>$done,'reconciled_count'=>$reconciled);}catch(Exception $e){if($tx->active)$tx->rollback();throw $e;}}
 }
