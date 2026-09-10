@@ -40,13 +40,13 @@ class ReconciliationCommand
 		if($value===0.1)return '0.1';
 		throw new RuntimeException('unmodelled fake DOUBLE value');
 	}
-	public function queryRow($fetchAssociative,$params){$row=$this->db->rows[intval($params[':id'])];$fields=strpos($this->sql,'SELECT id,')===0?array('id','coin_id','blockhash','txhash','amount','confirmations','price','category'):array('txhash','amount','confirmations','price','category');$out=array();foreach($fields as $field){$value=$row[$field];$cast=($field==='amount'&&strpos($this->sql,'CAST(amount AS CHAR) AS amount')!==false)||($field==='price'&&strpos($this->sql,'CAST(price AS CHAR) AS price')!==false);$out[$field]=$cast?$this->castDoubleAsMariaDbChar($value):$value;}if($this->db->corruptField!==null&&count($fields)===5)$out[$this->db->corruptField]=$this->db->corruptValue;return $out;}
+	public function queryRow($fetchAssociative,$params){$id=intval($params[':id']);if(!isset($this->db->rows[$id]))return false;$row=$this->db->rows[$id];$fields=strpos($this->sql,'SELECT id,')===0?array('id','coin_id','blockhash','txhash','amount','confirmations','price','category'):array('txhash','amount','confirmations','price','category');$out=array();foreach($fields as $field){$value=$row[$field];$cast=($field==='amount'&&strpos($this->sql,'CAST(amount AS CHAR) AS amount')!==false)||($field==='price'&&strpos($this->sql,'CAST(price AS CHAR) AS price')!==false);$out[$field]=$cast?$this->castDoubleAsMariaDbChar($value):$value;}if($this->db->corruptField!==null&&count($fields)===5)$out[$this->db->corruptField]=$this->db->corruptValue;return $out;}
 	public function queryAll($fetchAssociative,$params){$out=$this->db->candidateRows;foreach($out as &$row){if(strpos($this->sql,'CAST(B.amount AS CHAR) block_amount')!==false)$row['block_amount']=$this->castDoubleAsMariaDbChar($row['block_amount']);if(strpos($this->sql,'CAST(B.price AS CHAR) block_price')!==false)$row['block_price']=$this->castDoubleAsMariaDbChar($row['block_price']);}return $out;}
-	public function update($table,$values,$where,$params){$id=intval($params[':id']);$this->db->updateFields=array_keys($values);foreach($values as $field=>$value)$this->db->rows[$id][$field]=($field==='amount'||$field==='price')?floatval($value):$value;return 1;}
+	public function update($table,$values,$where,$params){$id=intval($params[':id']);$this->db->updateFields=array_keys($values);foreach($values as $field=>$value)$this->db->rows[$id][$field]=($field==='amount'||$field==='price')?floatval($value):$value;return $this->db->affectedRows;}
 }
 class ReconciliationDatabase
 {
-	public $rows;public $candidateRows=array();public $queries=array();public $commits=0;public $rollbacks=0;public $updateFields=array();public $corruptField=null;public $corruptValue=null;
+	public $rows;public $candidateRows=array();public $queries=array();public $commits=0;public $rollbacks=0;public $updateFields=array();public $corruptField=null;public $corruptValue=null;public $affectedRows=1;
 	public $protectedState=array('earnings'=>0,'accounts'=>0,'payouts'=>0,'wallet'=>0,'services'=>0,'backend_loop'=>0,'shares'=>0,'financial'=>0);
 	public function __construct($row){$this->rows=array(intval($row['id'])=>$row);}
 	public function beginTransaction(){return new ReconciliationTransaction($this);}
@@ -90,6 +90,24 @@ reconciliationAssert(strpos($db->queries[0],'CAST(amount AS CHAR) AS amount')!==
 reconciliationAssert(strpos($db->queries[1],'CAST(amount AS CHAR) AS amount')!==false&&strpos($db->queries[1],'CAST(price AS CHAR) AS price')!==false,'post-update query casts both DOUBLE fields');
 reconciliationAssert(is_float($db->rows[27320]['amount'])&&is_float($db->rows[27320]['price']),'fake adapter stores DOUBLE columns as PHP floats before SQL casts them to text');
 reconciliationAssert($db->protectedState===$protectedBefore,'protected markers remain untouched after success');
+
+$alreadyEnriched=array_merge($before,$enrichment);$alreadyEnrichedDatabase=$alreadyEnriched;
+$alreadyEnrichedDatabase['amount']=floatval($alreadyEnrichedDatabase['amount']);$alreadyEnrichedDatabase['price']=floatval($alreadyEnrichedDatabase['price']);
+$db=new ReconciliationDatabase($alreadyEnrichedDatabase);$db->affectedRows=0;$store=new BadpoolYiiLiveBlockEnrichmentStore($db);$result=$store->applyEnrichments(array(array('block_id'=>27320,'expected_block'=>$alreadyEnriched,'enrichment'=>$enrichment)));
+reconciliationAssert($result===array('updated_count'=>1,'reconciled_count'=>1),'zero-row idempotent update reconciles successfully');
+reconciliationAssert($db->commits===1&&$db->rollbacks===0&&count($db->queries)===2,'zero-row update commits only after post-update select');
+
+$db=new ReconciliationDatabase($alreadyEnrichedDatabase);$db->affectedRows=0;$db->corruptField='category';$db->corruptValue='immature';$store=new BadpoolYiiLiveBlockEnrichmentStore($db);
+try{$store->applyEnrichments(array(array('block_id'=>27320,'expected_block'=>$alreadyEnriched,'enrichment'=>$enrichment)));reconciliationAssert(false,'zero-row update with bad resulting state was accepted');}catch(RuntimeException $e){reconciliationAssert($e->getMessage()==='block reconciliation failed: 27320','zero-row bad resulting state fails reconciliation');}
+reconciliationAssert($db->commits===0&&$db->rollbacks===1,'zero-row bad resulting state rolls back');
+
+$db=new ReconciliationDatabase($before);$db->affectedRows=2;$store=new BadpoolYiiLiveBlockEnrichmentStore($db);
+try{$store->applyEnrichments($updates);reconciliationAssert(false,'unexpected affected-row count was accepted');}catch(RuntimeException $e){reconciliationAssert($e->getMessage()==='block update failed: 27320','unexpected affected-row count identifies the block');}
+reconciliationAssert($db->commits===0&&$db->rollbacks===1&&count($db->queries)===1,'unexpected affected-row count rolls back before reconciliation');
+
+$db=new ReconciliationDatabase($before);unset($db->rows[27320]);$store=new BadpoolYiiLiveBlockEnrichmentStore($db);
+try{$store->applyEnrichments($updates);reconciliationAssert(false,'missing locked row was accepted');}catch(RuntimeException $e){reconciliationAssert($e->getMessage()==='locked block drift: 27320','missing locked row is rejected as drift');}
+reconciliationAssert($db->commits===0&&$db->rollbacks===1&&$db->updateFields===array(),'missing locked row rolls back before update');
 
 foreach(array('txhash'=>'other','amount'=>'2165.26907443','confirmations'=>1723,'price'=>'0.1','category'=>'immature') as $field=>$changed){
 	$db=new ReconciliationDatabase($before);$protectedBefore=$db->protectedState;$db->corruptField=$field;$db->corruptValue=$changed;$store=new BadpoolYiiLiveBlockEnrichmentStore($db);
