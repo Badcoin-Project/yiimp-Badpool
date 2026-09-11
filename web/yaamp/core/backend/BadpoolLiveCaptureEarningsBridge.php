@@ -42,7 +42,7 @@ class BadpoolLiveCaptureEarningsBridge
 		$inventory = $this->store->inventory($coinId, $selectedBlockIds, $limit);
 		if (!is_array($inventory)) throw new RuntimeException('invalid live candidate inventory');
 		usort($inventory, function($a,$b) { return intval($a['block_id']) - intval($b['block_id']); });
-		$found = array(); $blocks = array(); $projected = array();
+		$found = array(); $blocks = array(); $projected = array(); $models = array();
 		foreach ($inventory as $item) {
 			$id = intval($item['block_id']); $found[$id] = true; $reasons = array();
 			if (empty($item['block_exists'])) $reasons[] = 'missing_block';
@@ -52,20 +52,32 @@ class BadpoolLiveCaptureEarningsBridge
 			if (intval($item['earnings_count']) > 0) $reasons[] = 'already_has_earnings';
 			$attrs = isset($item['attributions']) && is_array($item['attributions']) ? $item['attributions'] : array();
 			usort($attrs, function($a,$b) { return intval($a['userid']) - intval($b['userid']); });
-			if (!$attrs) $reasons[] = 'blocked_no_attribution';
+			$zeroWidth = intval($item['share_floor_id']) === intval($item['share_ceiling_id']);
+			$model = $attrs ? 'share_window' : null;
+			if (!$attrs && $zeroWidth && intval(isset($item['block_userid']) ? $item['block_userid'] : 0) > 0 && !empty($item['block_user_exists']))
+				$model = 'block_userid_single_recipient';
+			if (!$attrs && $model === null) $reasons[] = $zeroWidth ? 'blocked_invalid_block_userid' : 'blocked_no_attribution';
 			$total = 0.0;
 			foreach ($attrs as $a) { $d=floatval($a['difficulty']); if ($d <= 0) $reasons[]='non_positive_attribution_difficulty'; else $total += $d; }
 			if (!in_array(isset($item['block_category'])?(string)$item['block_category']:'',array('immature','generate'),true)) $reasons[] = 'blocked_pending_block_enrichment';
 			if (!isset($item['block_amount']) || $item['block_amount'] === null || !is_numeric($item['block_amount']) || floatval($item['block_amount']) <= 0) $reasons[] = 'blocked_pending_block_amount';
 			$reasons = array_values(array_unique($reasons)); sort($reasons, SORT_STRING);
 			$state = empty($reasons) ? 'eligible' : 'blocked';
-			$source = array('block_id'=>$id,'candidate_coin_id'=>intval($item['candidate_coin_id']),'candidate_algo'=>(string)$item['candidate_algo'],'blockhash'=>(string)$item['blockhash'],'found_time'=>intval($item['found_time']),'price'=>self::decimal($item['price']),'share_floor_id'=>intval($item['share_floor_id']),'share_ceiling_id'=>intval($item['share_ceiling_id']),'block_exists'=>(bool)$item['block_exists'],'block_coin_id'=>isset($item['block_coin_id'])?intval($item['block_coin_id']):null,'block_algo'=>isset($item['block_algo'])?(string)$item['block_algo']:null,'block_amount'=>isset($item['block_amount'])?self::decimal($item['block_amount']):null,'block_txhash'=>isset($item['block_txhash'])?(string)$item['block_txhash']:null,'block_confirmations'=>isset($item['block_confirmations'])?intval($item['block_confirmations']):null,'block_price'=>isset($item['block_price'])?self::decimal($item['block_price']):null,'block_category'=>isset($item['block_category'])?(string)$item['block_category']:null,'earnings_count'=>intval($item['earnings_count']));
-			$blocks[] = array('block_id'=>$id,'state'=>$state,'refusal_reasons'=>$reasons,'source'=>$source,'attribution_count'=>count($attrs),'attribution_difficulty'=>self::decimal($total));
-			if ($state === 'eligible') foreach ($attrs as $a) {
+			$source = array('block_id'=>$id,'candidate_coin_id'=>intval($item['candidate_coin_id']),'candidate_algo'=>(string)$item['candidate_algo'],'blockhash'=>(string)$item['blockhash'],'found_time'=>intval($item['found_time']),'price'=>self::decimal($item['price']),'share_floor_id'=>intval($item['share_floor_id']),'share_ceiling_id'=>intval($item['share_ceiling_id']),'block_exists'=>(bool)$item['block_exists'],'block_coin_id'=>isset($item['block_coin_id'])?intval($item['block_coin_id']):null,'block_algo'=>isset($item['block_algo'])?(string)$item['block_algo']:null,'block_userid'=>isset($item['block_userid'])?intval($item['block_userid']):null,'block_user_exists'=>!empty($item['block_user_exists']),'block_amount'=>isset($item['block_amount'])?self::decimal($item['block_amount']):null,'block_txhash'=>isset($item['block_txhash'])?(string)$item['block_txhash']:null,'block_confirmations'=>isset($item['block_confirmations'])?intval($item['block_confirmations']):null,'block_price'=>isset($item['block_price'])?self::decimal($item['block_price']):null,'block_category'=>isset($item['block_category'])?(string)$item['block_category']:null,'earnings_count'=>intval($item['earnings_count']));
+			$models[] = array('block_id'=>$id,'attribution_model'=>$model);
+			$blocks[] = array('block_id'=>$id,'state'=>$state,'refusal_reasons'=>$reasons,'source'=>$source,'attribution_model'=>$model,'attribution_count'=>$model==='block_userid_single_recipient'?1:count($attrs),'attribution_difficulty'=>self::decimal($total),'share_difficulty_consumed'=>self::decimal($model==='share_window'?$total:0));
+			if ($state === 'eligible' && $model === 'block_userid_single_recipient') {
+				$a=array('userid'=>intval($item['block_userid']),'no_fees'=>intval($item['block_user_no_fees']),'donation'=>floatval($item['block_user_donation']));
+				$amount=floatval($item['block_amount']);
+				if (empty($a['no_fees'])) $amount=call_user_func($this->fee,$amount,$item['candidate_algo'],null);
+				if ($a['donation']>0) $amount=call_user_func($this->fee,$amount,$item['candidate_algo'],$a['donation']);
+				if ($amount > 0) $projected[]=array('userid'=>$a['userid'],'coinid'=>$coinId,'blockid'=>$id,'create_time'=>intval($item['found_time']),'mature_time'=>null,'amount'=>self::decimal($amount),'price'=>self::decimal($item['price']),'status'=>0,'attribution_model'=>$model);
+			}
+			if ($state === 'eligible' && $model === 'share_window') foreach ($attrs as $a) {
 				$amount=floatval($item['block_amount'])*floatval($a['difficulty'])/$total;
 				if (empty($a['no_fees'])) $amount=call_user_func($this->fee,$amount,$item['candidate_algo'],null);
 				if (floatval($a['donation'])>0) $amount=call_user_func($this->fee,$amount,$item['candidate_algo'],floatval($a['donation']));
-				if ($amount > 0) $projected[]=array('userid'=>intval($a['userid']),'coinid'=>$coinId,'blockid'=>$id,'create_time'=>intval($item['found_time']),'mature_time'=>null,'amount'=>self::decimal($amount),'price'=>self::decimal($item['price']),'status'=>0);
+				if ($amount > 0) $projected[]=array('userid'=>intval($a['userid']),'coinid'=>$coinId,'blockid'=>$id,'create_time'=>intval($item['found_time']),'mature_time'=>null,'amount'=>self::decimal($amount),'price'=>self::decimal($item['price']),'status'=>0,'attribution_model'=>$model);
 			}
 		}
 		if ($selectedBlockIds) foreach ($selectedBlockIds as $id) if (!isset($found[$id])) $blocks[]=array('block_id'=>$id,'state'=>'blocked','refusal_reasons'=>array('unknown_or_non_live_block_id'),'source'=>null,'attribution_count'=>0,'attribution_difficulty'=>self::decimal(0));
@@ -74,7 +86,7 @@ class BadpoolLiveCaptureEarningsBridge
 		$ids=array();$blocked=0; foreach($blocks as $b){$ids[]=$b['block_id'];if($b['state']==='blocked')$blocked++;}
 		$sources=array();foreach($blocks as $b)if($b['source']!==null)$sources[]=$b['source'];
 		$attrsCanonical=array();foreach($inventory as $i){$as=$i['attributions'];usort($as,function($a,$b){return intval($a['userid'])-intval($b['userid']);});foreach($as as $a)$attrsCanonical[]=array('block_id'=>intval($i['block_id']),'userid'=>intval($a['userid']),'difficulty'=>self::decimal($a['difficulty']),'no_fees'=>intval($a['no_fees']),'donation'=>self::decimal($a['donation']));}
-		return array('schema'=>self::SCHEMA,'version'=>1,'action'=>'live-capture-earnings-dryrun','coin_id'=>$coinId,'selected_block_ids'=>$ids,'selected_count'=>count($blocks),'blocked_count'=>$blocked,'eligible_count'=>count($blocks)-$blocked,'per_block_inventory'=>$blocks,'projected_earnings_rows'=>$projected,'source_live_candidate_checksum'=>self::checksum($sources),'attribution_checksum'=>self::checksum($attrsCanonical),'projected_earnings_checksum'=>self::checksum($projected),'selected_scope_checksum'=>self::checksum(array('coin_id'=>$coinId,'selected_block_ids'=>$ids)),'apply_command_shape'=>self::applyCommandShape(),'read_only'=>true);
+		return array('schema'=>self::SCHEMA,'version'=>1,'action'=>'live-capture-earnings-dryrun','coin_id'=>$coinId,'selected_block_ids'=>$ids,'selected_count'=>count($blocks),'blocked_count'=>$blocked,'eligible_count'=>count($blocks)-$blocked,'per_block_inventory'=>$blocks,'projected_earnings_rows'=>$projected,'source_live_candidate_checksum'=>self::checksum($sources),'attribution_checksum'=>self::checksum($attrsCanonical),'attribution_model_checksum'=>self::checksum($models),'projected_earnings_checksum'=>self::checksum($projected),'selected_scope_checksum'=>self::checksum(array('coin_id'=>$coinId,'selected_block_ids'=>$ids)),'apply_command_shape'=>self::applyCommandShape(),'read_only'=>true);
 	}
 
 	public function approvalPackage($coinId,$ids=array(),$limit=25)
@@ -87,19 +99,19 @@ class BadpoolLiveCaptureEarningsBridge
 		if (!is_array($package) || !isset($package['approval_package_checksum'])) throw new InvalidArgumentException('missing approval package');
 		$expected=$package['approval_package_checksum'];
 		if (!hash_equals($expected,self::checksum(self::approvalPayload($package))) || !hash_equals($expected,(string)$fileChecksum)) throw new RuntimeException('approval package checksum mismatch');
-		foreach(array('selected_scope_checksum','source_live_candidate_checksum','attribution_checksum','projected_earnings_checksum') as $key) if(!isset($provided[$key])||!hash_equals((string)$package[$key],(string)$provided[$key])) throw new RuntimeException($key.' mismatch');
+		foreach(array('selected_scope_checksum','source_live_candidate_checksum','attribution_checksum','attribution_model_checksum','projected_earnings_checksum') as $key) if(!isset($provided[$key])||!hash_equals((string)$package[$key],(string)$provided[$key])) throw new RuntimeException($key.' mismatch');
 		if($confirmation!==self::CONFIRMATION) throw new RuntimeException('incorrect operator confirmation');
 		if(empty($package['approval_ready'])||intval($package['blocked_count'])!==0) throw new RuntimeException('package contains blocked candidates');
 		$fresh=$this->dryrun($package['coin_id'],$package['selected_block_ids'],max(1,count($package['selected_block_ids'])));
-		foreach(array('selected_scope_checksum','source_live_candidate_checksum','attribution_checksum','projected_earnings_checksum') as $key)if(!hash_equals((string)$package[$key],(string)$fresh[$key]))throw new RuntimeException('live scope drift: '.$key);
+		foreach(array('selected_scope_checksum','source_live_candidate_checksum','attribution_checksum','attribution_model_checksum','projected_earnings_checksum') as $key)if(!hash_equals((string)$package[$key],(string)$fresh[$key]))throw new RuntimeException('live scope drift: '.$key);
 		$result=$this->store->applyEarnings($package['projected_earnings_rows'],$provided);
 		if(!is_array($result)||intval($result['inserted_count'])!==count($package['projected_earnings_rows']))throw new RuntimeException('post-apply reconciliation failed');
 		return array('schema'=>self::SCHEMA,'version'=>1,'action'=>'live-capture-earnings-apply','status'=>'applied','selected_block_ids'=>$package['selected_block_ids'],'inserted_count'=>intval($result['inserted_count']),'post_apply_reconciliation'=>$result,'payout_rows_created'=>false,'wallet_sends'=>false,'backend_loops_run'=>false);
 	}
 
-	public static function applyCommandShape(){return 'php yaamp/yiic.php badpoolguard live-capture-earnings-apply --coin-id=<id> --approval-package=<path> --approval-package-checksum=<sha256> --selected-scope-checksum=<sha256> --source-live-candidate-checksum=<sha256> --attribution-checksum=<sha256> --projected-earnings-checksum=<sha256> --operator-confirms-live-capture-earnings='.self::CONFIRMATION.' --format=json';}
+	public static function applyCommandShape(){return 'php yaamp/yiic.php badpoolguard live-capture-earnings-apply --coin-id=<id> --approval-package=<path> --approval-package-checksum=<sha256> --selected-scope-checksum=<sha256> --source-live-candidate-checksum=<sha256> --attribution-checksum=<sha256> --attribution-model-checksum=<sha256> --projected-earnings-checksum=<sha256> --operator-confirms-live-capture-earnings='.self::CONFIRMATION.' --format=json';}
 	public static function checksum($value){return hash('sha256',json_encode(self::canonical($value),JSON_UNESCAPED_SLASHES));}
-	private static function approvalPayload($p){$keys=array('schema','version','action','coin_id','selected_block_ids','selected_count','blocked_count','eligible_count','per_block_inventory','projected_earnings_rows','source_live_candidate_checksum','attribution_checksum','projected_earnings_checksum','selected_scope_checksum','apply_command_shape','approval_ready');$out=array();foreach($keys as $k)$out[$k]=isset($p[$k])?$p[$k]:null;return $out;}
+	private static function approvalPayload($p){$keys=array('schema','version','action','coin_id','selected_block_ids','selected_count','blocked_count','eligible_count','per_block_inventory','projected_earnings_rows','source_live_candidate_checksum','attribution_checksum','attribution_model_checksum','projected_earnings_checksum','selected_scope_checksum','apply_command_shape','approval_ready');$out=array();foreach($keys as $k)$out[$k]=isset($p[$k])?$p[$k]:null;return $out;}
 	private static function canonical($v){if(!is_array($v))return $v;if(array_keys($v)!==range(0,count($v)-1)){ksort($v,SORT_STRING);}foreach($v as $k=>$x)$v[$k]=self::canonical($x);return $v;}
 	private static function decimal($v){return number_format(floatval($v),12,'.','');}
 }
@@ -111,7 +123,7 @@ class BadpoolYiiLiveCaptureEarningsStore implements BadpoolLiveCaptureEarningsSt
 	{
 		$p=array(':coin'=>$coinId);$where='C.coin_id=:coin';
 		if($ids){$in=array();foreach($ids as $n=>$id){$k=':id'.$n;$in[]=$k;$p[$k]=$id;}$where.=' AND C.block_id IN ('.implode(',',$in).')';}
-		$sql="SELECT C.*,B.id AS joined_block_id,B.coin_id AS block_coin_id,CO.algo AS block_algo,B.amount AS block_amount,B.txhash AS block_txhash,B.confirmations AS block_confirmations,B.price AS block_price,B.category AS block_category,(SELECT COUNT(*) FROM earnings E WHERE E.blockid=C.block_id) AS earnings_count FROM live_block_candidates C LEFT JOIN blocks B ON B.id=C.block_id LEFT JOIN coins CO ON CO.id=B.coin_id WHERE $where ORDER BY C.block_id LIMIT ".intval($limit);
+		$sql="SELECT C.*,B.id AS joined_block_id,B.coin_id AS block_coin_id,CO.algo AS block_algo,B.userid AS block_userid,A.id IS NOT NULL AS block_user_exists,IFNULL(A.no_fees,0) AS block_user_no_fees,IFNULL(A.donation,0) AS block_user_donation,B.amount AS block_amount,B.txhash AS block_txhash,B.confirmations AS block_confirmations,B.price AS block_price,B.category AS block_category,(SELECT COUNT(*) FROM earnings E WHERE E.blockid=C.block_id) AS earnings_count FROM live_block_candidates C LEFT JOIN blocks B ON B.id=C.block_id LEFT JOIN coins CO ON CO.id=B.coin_id LEFT JOIN accounts A ON A.id=B.userid WHERE $where ORDER BY C.block_id LIMIT ".intval($limit);
 		$rows=$this->db->createCommand($sql)->queryAll(true,$p);foreach($rows as &$r){$r['block_exists']=$r['joined_block_id']!==null;$r['candidate_coin_id']=$r['coin_id'];$r['candidate_algo']=$r['algo'];$r['attributions']=$this->db->createCommand('SELECT userid,difficulty,no_fees,donation FROM live_block_attributions WHERE block_id=:id ORDER BY userid')->queryAll(true,array(':id'=>$r['block_id']));}return $rows;
 	}
 	public function applyEarnings($rows,$expected)
