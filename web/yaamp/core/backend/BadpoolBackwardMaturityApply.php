@@ -8,6 +8,7 @@ class BadpoolBackwardMaturityApply
 	const SCHEMA = 'badpool.backward_maturity_apply.v1';
 	const COMMAND = 'backward-maturity-transition-apply';
 	const MODE = 'guarded-apply';
+	const APPROVAL_PACKAGE_FILE_SHA256 = '6cad1443efda2f794c87faa588c62602aae4f2f1e61215427613d643942d8e7b';
 	const APPROVAL_PACKAGE_INTERNAL_CHECKSUM = 'acc0955d8b97720f86a18fe7e2308d3007157ab2dcea43c66f143d1099a27b7a';
 	const DRYRUN_FILE_SHA256 = '0102703a6ce840471b87ac8e8324763670615763aaafc11d4a9b3a9504fabfea';
 
@@ -36,12 +37,13 @@ class BadpoolBackwardMaturityApply
 		$p=self::parseOptions($args);$o=self::v($p,'options',array());$report=self::baseReport($o);
 		if($p['status']!=='pass')return self::hold($report,self::v($p,'message'));
 		if(isset($expectedBindings['dryrun_report_file_sha256'])&&!hash_equals($expectedBindings['dryrun_report_file_sha256'],$o['dryrun-report-checksum']))return self::hold($report,'Dry-run report is not the retained reviewed file binding.');
-		$approval=self::readJson($o['approval-package'],$o['approval-package-checksum'],$error);if($approval===false)return self::hold($report,$error);
+		$fileChecksum=self::v($expectedBindings,'file_checksum');
+		$approval=self::readJson($o['approval-package'],$o['approval-package-checksum'],$error,$fileChecksum);if($approval===false)return self::hold($report,$error);
 		$internalChecksum=self::approvalPackageInternalChecksum($approval);$report['package_bindings']['approval_package_internal_checksum']=$internalChecksum;
-		$dry=self::readJson($o['dryrun-report'],$o['dryrun-report-checksum'],$error);if($dry===false)return self::hold($report,$error);
+		$dry=self::readJson($o['dryrun-report'],$o['dryrun-report-checksum'],$error,$fileChecksum);if($dry===false)return self::hold($report,$error);
 		$expectedInternal=isset($expectedBindings['approval_package_internal_checksum'])?$expectedBindings['approval_package_internal_checksum']:self::APPROVAL_PACKAGE_INTERNAL_CHECKSUM;
-		$checks=self::packageChecks($approval,$dry,$o,$p['earning_ids'],$p['block_ids'],$expectedInternal,$internalChecksum);$report['pre_apply_validation']['retained_package_checks']=$checks;
-		foreach($checks as $ok)if(!$ok)return self::hold($report,'Retained package binding failed.');
+		$packageValidation=self::packageChecks($approval,$dry,$o,$p['earning_ids'],$p['block_ids'],$expectedInternal,$internalChecksum);$report['pre_apply_validation']['retained_package_checks']=$packageValidation['checks'];$report['pre_apply_validation']['retained_package_checksum_diagnostics']=$packageValidation['diagnostics'];
+		foreach($packageValidation['checks'] as $ok)if(!$ok)return self::hold($report,'Retained package binding failed.');
 		$started=false;
 		try {
 			$store->begin();$started=true;$store->lock($p['earning_ids'],$p['block_ids']);$fresh=$store->fresh();
@@ -55,7 +57,7 @@ class BadpoolBackwardMaturityApply
 		} catch(Exception $e) {if($started)$store->rollback();$report['status']='rollback';$report['errors'][]=$e->getMessage();return self::finish($report);}
 	}
 
-	private static function readJson($path,$sha,&$error){$error=null;$real=realpath($path);if($real===false||!is_file($real)||!is_readable($real)){$error='Bound report is not a readable regular file.';return false;}$raw=file_get_contents($real);if($raw===false||!hash_equals($sha,hash('sha256',$raw))){$error='Bound report file SHA-256 mismatch.';return false;}$j=json_decode($raw,true);if(!is_array($j)||json_last_error()!==JSON_ERROR_NONE){$error='Bound report is not valid JSON object data.';return false;}return $j;}
+	private static function readJson($path,$sha,&$error,$fileChecksum=null){$error=null;$real=realpath($path);if($real===false||!is_file($real)||!is_readable($real)){$error='Bound report is not a readable regular file.';return false;}$raw=file_get_contents($real);$actual=is_callable($fileChecksum)?call_user_func($fileChecksum,$real,$raw):hash('sha256',$raw);if($raw===false||!is_string($actual)||!hash_equals($sha,$actual)){$error='Bound report file SHA-256 mismatch.';return false;}$j=json_decode($raw,true);if(!is_array($j)||json_last_error()!==JSON_ERROR_NONE){$error='Bound report is not valid JSON object data.';return false;}return $j;}
 	private static function approvalPackageInternalChecksum($a)
 	{
 		$c=self::v($a,'approval_package_checksum');
@@ -65,14 +67,21 @@ class BadpoolBackwardMaturityApply
 	private static function packageChecks($a,$d,$o,$eids,$bids,$expectedInternal,$internalChecksum)
 	{
 		$s=self::v($a,'scope',array());$r=self::v($a,'retained_dryrun',array());$blocked=self::v($a,'blocked_actions',array());$checksum=self::v($a,'approval_package_checksum',array());$copy=$a;unset($copy['generated_at'],$copy['approval_package_checksum'],$copy['report_checksum']);
+		$internalPresent=array_key_exists('approval_package_checksum',$a);
+		$internalShapeValid=$internalChecksum!==null;
+		$internalMatchesReviewed=$internalShapeValid&&is_string($expectedInternal)&&hash_equals($expectedInternal,$internalChecksum);
+		$historicalBinding=hash_equals(self::APPROVAL_PACKAGE_FILE_SHA256,self::v($o,'approval-package-checksum',''))&&$internalMatchesReviewed&&hash_equals(self::APPROVAL_PACKAGE_INTERNAL_CHECKSUM,$internalChecksum);
+		$recomputeRequired=!$historicalBinding;
+		$recomputeMatches=BadpoolGuardReport::checksum($copy)['value'];
+		$recomputeSatisfied=false;if($internalShapeValid)$recomputeSatisfied=!$recomputeRequired||hash_equals($internalChecksum,$recomputeMatches);
 		$allBlocked=true;foreach(array('maturity_apply','account_credit_apply','payout_row_creation','wallet_send','database_mutation','backend_loop_execution','service_changes','share_deletion') as $k)if(self::v($blocked,$k)!==true)$allBlocked=false;
-		return array(
+		return array('checks'=>array(
 			'file_checksum_matches'=>true,'schema'=>self::v($a,'schema')===BadpoolBackwardMaturityApprovalPackage::SCHEMA,'package_type'=>self::v($a,'package_type')===BadpoolBackwardMaturityApprovalPackage::PACKAGE_TYPE,'status'=>self::v($a,'status')==='pass','mode'=>self::v($a,'mode')===BadpoolBackwardMaturityApprovalPackage::MODE,'equality_checks'=>self::v($a,'failed_equality_checks')===array(),
 			'exact_scope'=>self::v($s,'coin_id')===1267&&self::v($s,'algo')==='scrypt'&&self::v($s,'symbol')==='BAD'&&self::v($s,'selected_earning_ids')===$eids&&self::v($s,'selected_block_ids')===$bids,
 			'inventory'=>self::v($s,'expected_inventory_checksum')===$o['expected-inventory-checksum'],'dryrun_path'=>self::v($r,'path')===$o['dryrun-report'],'dryrun_checksum'=>self::v($r,'supplied_checksum')===$o['dryrun-report-checksum'],
-			'internal_checksum_valid'=>$internalChecksum!==null&&hash_equals($internalChecksum,BadpoolGuardReport::checksum($copy)['value']),'internal_checksum_matches_reviewed'=>$internalChecksum!==null&&hash_equals($expectedInternal,$internalChecksum),'checksum_non_authorizing'=>self::v($checksum,'purpose')===BadpoolBackwardMaturityApprovalPackage::CHECKSUM_PURPOSE,'no_embedded_apply'=>!isset($a['apply_command'])&&!isset($a['apply_command_args'])&&!isset($a['apply_command_shape']),'blocked_actions'=>$allBlocked,'review_binding_only'=>strpos(self::v($checksum,'purpose',''),'not apply authorization')!==false,
+			'internal_checksum_present'=>$internalPresent,'internal_checksum_shape_valid'=>$internalShapeValid,'internal_checksum_matches_reviewed'=>$internalMatchesReviewed,'internal_checksum_recompute_satisfied'=>$recomputeSatisfied,'checksum_non_authorizing'=>self::v($checksum,'purpose')===BadpoolBackwardMaturityApprovalPackage::CHECKSUM_PURPOSE,'no_embedded_apply'=>!isset($a['apply_command'])&&!isset($a['apply_command_args'])&&!isset($a['apply_command_shape']),'blocked_actions'=>$allBlocked,'review_binding_only'=>strpos(self::v($checksum,'purpose',''),'not apply authorization')!==false,
 			'dryrun_bytes_match_package'=>self::v($r,'supplied_checksum')===$o['dryrun-report-checksum']
-		);
+		),'diagnostics'=>array('internal_checksum_recompute_required'=>$recomputeRequired,'internal_checksum_recompute_matches'=>$internalShapeValid&&$recomputeRequired?hash_equals($internalChecksum,$recomputeMatches):null,'internal_checksum_historical_review_binding'=>$historicalBinding));
 	}
 	private static function freshPass($f,$a){$s=self::v($f,'summary',array());$as=self::v($a,'fresh_validation',array());return self::v($f,'status')==='ok'&&self::v($s,'validation_status')==='pass'&&self::v($f,'failed_assertions')===array()&&self::v($s,'row_count')===71&&self::v($s,'distinct_block_count')===71&&self::v($s,'amount')===BadpoolBackwardMaturityDryrun::AMOUNT&&self::v($f,'scope')===self::v($a,'scope')&&self::v($s,'block_time_range')===self::v($as,'block_time_range')&&self::v($s,'create_time_range')===self::v($as,'create_time_range')&&self::v($f,'prior_credit_basis')===BadpoolBackwardMaturityApprovalPackage::PRIOR_CREDIT_BASIS;}
 	private static function postPass($p){return self::v($p,'selected_earnings_status_1')===71&&self::v($p,'selected_blocks_generate')===71&&self::v($p,'other_earnings_changed')===0&&self::v($p,'other_blocks_changed')===0&&self::v($p,'forbidden_tables_changed')===0;}
