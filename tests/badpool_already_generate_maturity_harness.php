@@ -47,6 +47,10 @@ ok($applied['updated_block_count']===1&&$applied['reconciled_generate_block_coun
 ok($generateApp->db->earnings[11]['status']===1&&$generateApp->db->earnings[12]['status']===1&&$generateApp->db->earnings[12]['mature_time']>0,'earnings maturity mutation failed');
 ok($applied['no_account_credit']===true&&$applied['no_payout_rows']===true&&$applied['wallet_sends']===false&&$applied['backend_loops_run']===false&&$applied['shares_deleted']===false,'hard safety boundary changed');
 
+$generateApp->db->blocks[2]=array('height'=>500002,'coin_id'=>1267,'category'=>'generate','confirmations'=>121,'mature_blocks'=>100);$generateApp->db->earnings[12]=array('userid'=>7,'coinid'=>1267,'blockid'=>2,'status'=>0);
+try{gm('applyMaturityTransitionRows')->invoke($command,array('items'=>array('linked_blocks'=>array($blocks[1]),'selected_earnings'=>array($items[1]))));ok(false,'apply accepted confirmation drift that remained mature');}catch(Exception $e){ok($generateApp->db->earnings[12]['status']===0,'confirmation drift reached earnings mutation');}
+$generateApp->db->blocks[2]=array('height'=>500002,'coin_id'=>1267,'category'=>'generate','confirmations'=>120,'mature_blocks'=>101);$generateApp->db->earnings[12]=array('userid'=>7,'coinid'=>1267,'blockid'=>2,'status'=>0);
+try{gm('applyMaturityTransitionRows')->invoke($command,array('items'=>array('linked_blocks'=>array($blocks[1]),'selected_earnings'=>array($items[1]))));ok(false,'apply accepted mature_blocks drift that remained mature');}catch(Exception $e){ok($generateApp->db->earnings[12]['status']===0,'mature_blocks drift reached earnings mutation');}
 $generateApp->db->blocks[2]['confirmations']=99;$generateApp->db->earnings[12]['status']=0;
 try{gm('applyMaturityTransitionRows')->invoke($command,array('items'=>array('linked_blocks'=>array($blocks[1]),'selected_earnings'=>array($items[1]))));ok(false,'apply accepted failed fresh maturity proof');}catch(Exception $e){ok($generateApp->db->earnings[12]['status']===0,'earning changed after block reconciliation failure');}
 

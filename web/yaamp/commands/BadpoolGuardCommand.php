@@ -2964,6 +2964,7 @@ class BadpoolGuardCommand extends CConsoleCommand
 		$selection = $this->parseMaturitySelection($args);
 		if ($selection['status'] === 'fail') { $this->guard->addError($selection['message']); return $this->guard->refusalReport(); }
 		$requestedIds=$selection['requested_block_ids']; $params=array(':coin_id'=>$coinId); $boundedSql='';
+		$categorySql = $selection['mode']==='exact-blocks' ? "B.category IN ('immature','generate')" : "B.category='immature'";
 		if($selection['mode']==='exact-blocks'){
 			$holders=array(); $requestParams=array(); foreach($requestedIds as $n=>$id){$key=':requested_block_'.$n;$holders[]=$key;$params[$key]=$id;$requestParams[$key]=$id;}
 			$requestedRows=$this->guard->selectAll('SELECT id,coin_id FROM blocks WHERE id IN ('.implode(',',$holders).') ORDER BY id ASC',$requestParams);
@@ -2972,7 +2973,7 @@ class BadpoolGuardCommand extends CConsoleCommand
 			if($wrong||$missing){$this->guard->addError('Exact block scope refused; wrong-coin block IDs: '.implode(',',$wrong).'; unknown block IDs: '.implode(',',$missing).'.');return $this->guard->refusalReport();}
 			$boundedSql=' AND B.id IN ('.implode(',',$holders).')';
 		}
-		$rows = $this->guard->selectAll("SELECT E.id AS earning_id,E.userid,E.coinid,E.blockid,E.amount,E.status,E.mature_time,B.id AS block_id,B.height AS block_height,B.coin_id AS block_coin_id,B.category AS block_category,B.confirmations AS confirmations,C.mature_blocks AS mature_blocks FROM earnings E INNER JOIN blocks B ON B.id=E.blockid INNER JOIN coins C ON C.id=B.coin_id WHERE E.status=0 AND B.coin_id=:coin_id AND E.coinid=:coin_id AND B.category IN ('immature','generate')".$boundedSql." ORDER BY B.id,E.id", $params);
+		$rows = $this->guard->selectAll("SELECT E.id AS earning_id,E.userid,E.coinid,E.blockid,E.amount,E.status,E.mature_time,B.id AS block_id,B.height AS block_height,B.coin_id AS block_coin_id,B.category AS block_category,B.confirmations AS confirmations,C.mature_blocks AS mature_blocks FROM earnings E INNER JOIN blocks B ON B.id=E.blockid INNER JOIN coins C ON C.id=B.coin_id WHERE E.status=0 AND B.coin_id=:coin_id AND E.coinid=:coin_id AND ".$categorySql.$boundedSql." ORDER BY B.id,E.id", $params);
 		$items = array(); $blocks = array(); $totalsByUser = array(); $total = BadpoolStage1Manifest::normalizeAmount('0'); $heights = array(); $excluded = array();
 		foreach ($rows as $r) {
 			$proof = $this->maturityProof($r);
@@ -2996,8 +2997,8 @@ class BadpoolGuardCommand extends CConsoleCommand
 		$report = $this->guard->baseReport();
 		$linkedIds=array();foreach($blocks as $b)$linkedIds[]=intval($b['block_id']);$without=array_values(array_diff($requestedIds,$linkedIds));
 		$report['selection_mode']=$selection['mode'];$report['requested_block_ids']=$requestedIds;$report['requested_block_count']=count($requestedIds);$report['selected_earning_ids']=array_map(function($i){return intval($i['earning_id']);},$items);$report['selected_earning_count']=count($items);$report['selected_linked_block_ids']=$linkedIds;$report['selected_linked_block_count']=count($linkedIds);$report['requested_blocks_without_selected_earnings']=$without;
-		$report['summary']['selection_criteria'] = array("earnings.status=0", "earnings.blockid=blocks.id", "blocks.coin_id=earnings.coinid=--coin-id", "blocks.category IN ('immature','generate')", "DB maturity proof confirmations >= mature_blocks");
-		$report['summary']['transition_models'] = array('immature_to_generate','already_generate_earnings_only');
+		$report['summary']['selection_criteria'] = array("earnings.status=0", "earnings.blockid=blocks.id", "blocks.coin_id=earnings.coinid=--coin-id", $selection['mode']==='exact-blocks' ? "blocks.category IN ('immature','generate')" : "blocks.category='immature'", "DB maturity proof confirmations >= mature_blocks");
+		$report['summary']['transition_models'] = $selection['mode']==='exact-blocks' ? array('immature_to_generate','already_generate_earnings_only') : array('immature_to_generate');
 		$report['summary']['excluded_by_reason'] = $excluded;
 		$report['summary']['selected_row_count'] = count($items); $report['summary']['linked_block_count'] = count($blocks); $report['summary']['total_amount'] = $total; $report['summary']['block_height_range'] = empty($heights)?null:array('min'=>min($heights),'max'=>max($heights)); $report['summary']['totals_by_user'] = array_values($totalsByUser);
 		$report['items']['selected_earnings'] = $items; $report['items']['linked_blocks'] = $blocks;
@@ -3330,7 +3331,7 @@ class BadpoolGuardCommand extends CConsoleCommand
 		$items=arraySafeVal(arraySafeVal($approval,'items',array()),'selected_earnings',array()); $blocks=arraySafeVal(arraySafeVal($approval,'items',array()),'linked_blocks',array()); $now=time(); $updated=0; $reconciled=0;
 		foreach($blocks as $b){
 			$current=app()->db->createCommand('SELECT B.id,B.height,B.coin_id,B.category,B.confirmations,C.mature_blocks FROM blocks B INNER JOIN coins C ON C.id=B.coin_id WHERE B.id=:id FOR UPDATE')->queryRow(true,array(':id'=>$b['block_id']));
-			if(!$current || intval($current['coin_id'])!==intval($b['coin_id']) || intval($current['height'])!==intval($b['height']) || (string)$current['category']!==(string)$b['from_category'] || !isset($current['confirmations']) || !is_numeric($current['confirmations']) || !isset($current['mature_blocks']) || !is_numeric($current['mature_blocks']) || intval($current['mature_blocks'])<=0 || intval($current['confirmations'])<intval($current['mature_blocks'])) throw new Exception('selected block maturity state changed or disappeared: '.$b['block_id']);
+			if(!$current || intval($current['coin_id'])!==intval($b['coin_id']) || intval($current['height'])!==intval($b['height']) || (string)$current['category']!==(string)$b['from_category'] || !isset($current['confirmations']) || !is_numeric($current['confirmations']) || !isset($current['mature_blocks']) || !is_numeric($current['mature_blocks']) || intval($current['confirmations'])!==intval($b['confirmations']) || intval($current['mature_blocks'])!==intval($b['mature_blocks']) || intval($current['mature_blocks'])<=0 || intval($current['confirmations'])<intval($current['mature_blocks'])) throw new Exception('selected block maturity state changed or disappeared: '.$b['block_id']);
 			$model=arraySafeVal($b,'transition_model');
 			if($model==='immature_to_generate'){$n=app()->db->createCommand("UPDATE blocks SET category='generate' WHERE id=:id AND coin_id=:coin_id AND height=:height AND category='immature'")->execute(array(':id'=>$b['block_id'],':coin_id'=>$b['coin_id'],':height'=>$b['height']));if($n!==1)throw new Exception('selected block changed or disappeared: '.$b['block_id']);$updated++;}
 			elseif($model==='already_generate_earnings_only'){$reconciled++;}
