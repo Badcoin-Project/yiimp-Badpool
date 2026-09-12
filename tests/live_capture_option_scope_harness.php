@@ -23,6 +23,7 @@ $enrichmentOnly=array(
 $earningsOnly=array(
 	'--source-live-candidate-checksum='.$sha,
 	'--attribution-checksum='.$sha,
+	'--attribution-model-checksum='.$sha,
 	'--projected-earnings-checksum='.$sha,
 	'--operator-confirms-live-capture-earnings=confirmed',
 );
@@ -41,12 +42,16 @@ foreach(array('live-capture-block-enrichment-dryrun','live-capture-block-enrichm
 }
 
 list($earningsContext,$earningsParsed)=parseLiveOptions('live-capture-earnings-approval-package',array_merge(array('--approval-package=/tmp/earnings.json'),$earningsOnly));
-optionScopeExpect($earningsContext->isValid()&&count($earningsParsed)===5,'earnings command rejected its valid option family');
+optionScopeExpect($earningsContext->isValid()&&count($earningsParsed)===6,'earnings command rejected its valid option family');
 list($enrichmentContext,$enrichmentParsed)=parseLiveOptions('live-capture-block-enrichment-approval-package',array_merge(array('--approval-package=/tmp/enrichment.json'),$enrichmentOnly));
 optionScopeExpect($enrichmentContext->isValid()&&count($enrichmentParsed)===5,'enrichment command rejected its valid option family');
 
 list($malformedContext)=parseLiveOptions('live-capture-earnings-dryrun',array('--attribution-checksum'));
 optionScopeExpect(!$malformedContext->isValid(),'malformed option was accepted');
+list($missingModelContext)=parseLiveOptions('live-capture-earnings-apply',array('--attribution-model-checksum'));
+optionScopeExpect(!$missingModelContext->isValid(),'attribution model checksum without a value was accepted');
+list($unrelatedModelContext)=parseLiveOptions('live-capture-block-enrichment-dryrun',array('--attribution-model-checksum='.$sha));
+optionScopeExpect(!$unrelatedModelContext->isValid(),'unrelated command accepted attribution model checksum');
 list($duplicateContext)=parseLiveOptions('live-capture-block-enrichment-dryrun',array('--rpc-result-checksum='.$sha,'--rpc-result-checksum='.$sha));
 optionScopeExpect(!$duplicateContext->isValid(),'duplicate option was accepted');
 list($unknownContext)=parseLiveOptions('live-capture-earnings-dryrun',array('--not-a-live-option=value'));

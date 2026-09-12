@@ -252,7 +252,8 @@ function getAlgoPort($algo)
 
 function yaamp_fee($algo)
 {
-	$fee = controller()->memcache->get("yaamp_fee-$algo");
+	$fee_cache = cache();
+	$fee = $fee_cache->get("yaamp_fee-$algo");
 	if($fee && is_numeric($fee)) return (float) $fee;
 
 /*	$norm = yaamp_get_algo_norm($algo);
@@ -279,7 +280,7 @@ function yaamp_fee($algo)
 		$fee = (float) $configFixedPoolFees[$algo];
 	}
 
-	controller()->memcache->set("yaamp_fee-$algo", $fee);
+	$fee_cache->set("yaamp_fee-$algo", $fee);
 	return $fee;
 }
 

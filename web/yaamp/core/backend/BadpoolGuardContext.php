@@ -45,6 +45,7 @@ class BadpoolGuardContext
 		'selected-scope-checksum',
 		'source-live-candidate-checksum',
 		'attribution-checksum',
+		'attribution-model-checksum',
 		'projected-earnings-checksum',
 		'operator-confirms-live-capture-earnings',
 		'candidate-inventory-checksum',
@@ -318,7 +319,7 @@ class BadpoolGuardContext
 		$options = array();
 		$batchOptions = array('mode', 'scope', 'only', 'batch-size', 'stop-before-wallet-send', 'resume-batch-id', 'payment-delay-override-package', 'payment-delay-override-package-checksum', 'operator-confirms-payment-delay-override');
 		$liveBridgeSharedOptions = array('approval-package');
-		$liveCaptureEarningsOptions = array('source-live-candidate-checksum','attribution-checksum','projected-earnings-checksum','operator-confirms-live-capture-earnings');
+		$liveCaptureEarningsOptions = array('source-live-candidate-checksum','attribution-checksum','attribution-model-checksum','projected-earnings-checksum','operator-confirms-live-capture-earnings');
 		$liveBlockEnrichmentOptions = array('candidate-inventory-checksum','block-inventory-checksum','rpc-result-checksum','operator-confirms-live-capture-block-enrichment');
 		foreach ($args as $arg) {
 

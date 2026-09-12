@@ -8014,7 +8014,7 @@ class BadpoolGuardCommand extends CConsoleCommand
 				if(!$path||!$checksum||!is_file($path)) throw new InvalidArgumentException('apply requires an approval package path and checksum');
 				$raw=file_get_contents($path); if(!hash_equals(strtolower($checksum),hash('sha256',$raw))) throw new RuntimeException('approval package file checksum mismatch');
 				$package=json_decode($raw,true); if(!is_array($package)||intval(arraySafeVal($package,'coin_id'))!==$coinId) throw new RuntimeException('approval package coin scope mismatch');
-				$provided=array('selected_scope_checksum'=>arraySafeVal($options,'selected-scope-checksum'),'source_live_candidate_checksum'=>arraySafeVal($options,'source-live-candidate-checksum'),'attribution_checksum'=>arraySafeVal($options,'attribution-checksum'),'projected_earnings_checksum'=>arraySafeVal($options,'projected-earnings-checksum'));
+				$provided=array('selected_scope_checksum'=>arraySafeVal($options,'selected-scope-checksum'),'source_live_candidate_checksum'=>arraySafeVal($options,'source-live-candidate-checksum'),'attribution_checksum'=>arraySafeVal($options,'attribution-checksum'),'attribution_model_checksum'=>arraySafeVal($options,'attribution-model-checksum'),'projected_earnings_checksum'=>arraySafeVal($options,'projected-earnings-checksum'));
 				return $bridge->applyPackage($package,$package['approval_package_checksum'],$provided,arraySafeVal($options,'operator-confirms-live-capture-earnings'));
 			}
 			$ids=BadpoolLiveCaptureEarningsBridge::parseIds(arraySafeVal($options,'selected-block-ids',''));
