@@ -40,7 +40,7 @@ badpool_expect_contains('maturity proof reason emitted', $command, 'maturity_pro
 badpool_expect_contains('maturity proof unavailable blocker emitted', $command, 'conservative_maturity_proof_unavailable', $failures);
 badpool_expect_contains('maturity missing mature blocks excluded', $command, 'missing_mature_blocks', $failures);
 badpool_expect_contains('maturity below mature blocks excluded', $command, 'confirmations_below_mature_blocks', $failures);
-badpool_expect_contains('maturity dryrun selects status0 immature rows', $command, "E.status=0 AND B.coin_id=:coin_id AND E.coinid=:coin_id AND B.category='immature'", $failures);
+badpool_expect_contains('maturity dryrun selects status0 rows with explicit eligible block categories', $command, "E.status=0 AND B.coin_id=:coin_id AND E.coinid=:coin_id AND B.category IN ('immature','generate')", $failures);
 badpool_expect_contains('maturity apply mutates only immature blocks', $command, "WHERE id=:id AND coin_id=:coin_id AND height=:height AND category='immature'", $failures);
 badpool_expect_contains('maturity apply mutates only selected earnings by identity scope', $command, "WHERE id=:id AND userid=:uid AND coinid=:cid AND blockid=:bid AND status=0", $failures);
 badpool_expect_not_contains('maturity apply must not require exact amount equality', $command, "WHERE id=:id AND userid=:uid AND coinid=:cid AND blockid=:bid AND amount".'=:amt'." AND status=0", $failures);
